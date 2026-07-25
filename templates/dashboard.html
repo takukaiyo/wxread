@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid">
+  <section class="panel wide">
+    <div class="panel-header">
+      <h2>运行状态</h2>
+      <form method="post" action="{{ url_for('run_now') }}">
+        <button type="submit" {% if active_run %}disabled{% endif %}>立即运行</button>
+      </form>
+    </div>
+    <div class="status-line">
+      <span class="status-dot {% if active_run %}running{% endif %}"></span>
+      {% if active_run %}有任务正在运行{% else %}当前空闲{% endif %}
+    </div>
+    <div class="actions-row">
+      <button type="button" id="test-login">测试登录态</button>
+      <span id="test-login-result" class="muted"></span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>定时任务</h2>
+    <form method="post" action="{{ url_for('save_schedule') }}" class="stack">
+      <label class="checkbox-row">
+        <input type="checkbox" name="enabled" {% if schedule.enabled %}checked{% endif %}>
+        启用每日运行
+      </label>
+      <label>
+        运行时间
+        <input type="time" name="time_of_day" value="{{ schedule.time_of_day }}" required>
+      </label>
+      <button type="submit">保存定时</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>登录方式</h2>
+    <div class="method active">
+      <strong>粘贴 curl 登录</strong>
+      <span>{{ masked_settings.WXREAD_CURL_BASH }}</span>
+      <button type="button" data-open-dialog="curl-login-dialog">打开</button>
+    </div>
+    <div class="qr-box">
+      <div class="method active">
+        <strong>扫码登录</strong>
+        <button type="button" id="qr-login-start">生成二维码</button>
+      </div>
+      <div id="qr-login-status" class="muted">未开始</div>
+      <img id="qr-login-image" class="qr-image" alt="微信读书登录二维码" hidden>
+    </div>
+  </section>
+
+  <section class="panel wide">
+    <h2>参数配置</h2>
+    <form method="post" action="{{ url_for('save_settings') }}" class="settings-form">
+      <label>
+        READ_NUM
+        <input name="READ_NUM" type="number" min="1" max="500" value="{{ settings.READ_NUM }}">
+      </label>
+      <div class="number-picker full" data-read-num-picker>
+        <span>快捷选择</span>
+        <button type="button" data-read-num="2">签到 2 次</button>
+        <button type="button" data-read-num="20">10 分钟</button>
+        <button type="button" data-read-num="40">20 分钟</button>
+        <button type="button" data-read-num="80">40 分钟</button>
+        <button type="button" data-read-num="120">60 分钟</button>
+        <button type="button" data-read-num="200">100 分钟</button>
+      </div>
+      <label>
+        推送方式
+        <select name="PUSH_METHOD">
+          {% for method in push_methods %}
+            <option value="{{ method }}" {% if method == settings.PUSH_METHOD %}selected{% endif %}>
+              {{ method or "不推送" }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        新面板密码
+        <input name="ADMIN_PASSWORD" type="password" placeholder="留空则不修改">
+      </label>
+      <section class="book-city full" data-book-city>
+        <div class="section-header">
+          <h3>书城选书</h3>
+          <div class="book-search">
+            <input id="book-search-input" type="search" placeholder="搜索书名或作者">
+            <button type="button" id="book-search-button">搜索</button>
+          </div>
+        </div>
+        <div id="book-search-status" class="muted">从微信读书书城搜索后添加到刷时长列表</div>
+        <div id="book-search-results" class="book-results" aria-live="polite"></div>
+        <div class="selected-books">
+          <h3>刷时长列表</h3>
+          <div id="selected-books-list" class="book-results selected">
+            {% for book in book_options %}
+              <div class="book-card" data-selected-book data-book-id="{{ book.id }}">
+                {% if book.cover %}
+                  <img src="{{ book.cover }}" alt="{{ book.title }}">
+                {% endif %}
+                <div>
+                  <strong>{{ book.title }}</strong>
+                  <span>{{ book.author or book.id }}</span>
+                </div>
+                <button type="button" class="ghost-button" data-remove-book>移除</button>
+                <input type="hidden" name="SELECTED_BOOKS" value="{{ book.id }}">
+                <input type="hidden" name="BOOK_ID" value="{{ book.id }}">
+                <input type="hidden" name="BOOK_TITLE" value="{{ book.title }}">
+                <input type="hidden" name="BOOK_AUTHOR" value="{{ book.author }}">
+                <input type="hidden" name="BOOK_COVER" value="{{ book.cover }}">
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+      <details class="advanced-settings full">
+        <summary>通知推送参数</summary>
+        <div class="advanced-grid">
+          <label>
+            PUSHPLUS_TOKEN
+            <input name="PUSHPLUS_TOKEN" type="password" placeholder="{{ masked_settings.PUSHPLUS_TOKEN }}">
+          </label>
+          <label>
+            WXPUSHER_SPT
+            <input name="WXPUSHER_SPT" type="password" placeholder="{{ masked_settings.WXPUSHER_SPT }}">
+          </label>
+          <label>
+            TELEGRAM_BOT_TOKEN
+            <input name="TELEGRAM_BOT_TOKEN" type="password" placeholder="{{ masked_settings.TELEGRAM_BOT_TOKEN }}">
+          </label>
+          <label>
+            TELEGRAM_CHAT_ID
+            <input name="TELEGRAM_CHAT_ID" type="password" placeholder="{{ masked_settings.TELEGRAM_CHAT_ID }}">
+          </label>
+          <label>
+            SERVERCHAN_SPT
+            <input name="SERVERCHAN_SPT" type="password" placeholder="{{ masked_settings.SERVERCHAN_SPT }}">
+          </label>
+        </div>
+      </details>
+      <div class="form-actions">
+        <button type="submit">保存配置</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel wide">
+    <h2>运行历史</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>状态</th>
+            <th>开始</th>
+            <th>结束</th>
+            <th>次数</th>
+            <th>成功</th>
+            <th>错误</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for run in runs %}
+            <tr>
+              <td>{{ run.id }}</td>
+              <td>{{ run.status }}</td>
+              <td>{{ run.started_at }}</td>
+              <td>{{ run.finished_at or "" }}</td>
+              <td>{{ run.read_num }}</td>
+              <td>{{ run.success_count }}</td>
+              <td>{{ run.error or "" }}</td>
+              <td>
+                {% if run.status == "running" %}
+                  <form method="post" action="{{ url_for('stop_run', run_id=run.id) }}" onsubmit="return confirm('确认停止这个正在运行的任务？');">
+                    <button type="submit" class="stop-button">停止</button>
+                  </form>
+                {% else %}
+                  <form method="post" action="{{ url_for('delete_run', run_id=run.id) }}" onsubmit="return confirm('确认删除这个任务记录？');">
+                    <button type="submit" class="danger-button">删除</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="8" class="muted">暂无运行记录</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+<dialog id="curl-login-dialog" class="modal">
+  <form method="post" action="{{ url_for('save_curl_login') }}" class="stack">
+    <div class="panel-header">
+      <h2>粘贴 curl 登录</h2>
+      <button type="button" class="ghost-button" data-close-dialog>关闭</button>
+    </div>
+    <label>
+      WXREAD_CURL_BASH
+      <textarea name="WXREAD_CURL_BASH" rows="8" placeholder="{{ masked_settings.WXREAD_CURL_BASH }}" required></textarea>
+    </label>
+    <div class="form-actions">
+      <button type="submit">保存 curl 登录</button>
+    </div>
+  </form>
+</dialog>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% endblock %}

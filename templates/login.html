@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}登录 - 微信读书控制面板{% endblock %}
+{% block content %}
+<section class="login-panel">
+  <h2>登录</h2>
+  <form method="post" class="stack">
+    <label>
+      面板密码
+      <input name="password" type="password" autocomplete="current-password" required autofocus>
+    </label>
+    <button type="submit">进入面板</button>
+  </form>
+</section>
+{% endblock %}

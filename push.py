@@ -6,8 +6,28 @@ import json
 import requests
 import logging
 from config import PUSHPLUS_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_BOT_TOKEN, WXPUSHER_SPT,SERVERCHAN_SPT
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PushSettings:
+    pushplus_token: str = PUSHPLUS_TOKEN or ""
+    telegram_bot_token: str = TELEGRAM_BOT_TOKEN or ""
+    telegram_chat_id: str = TELEGRAM_CHAT_ID or ""
+    wxpusher_spt: str = WXPUSHER_SPT or ""
+    serverchan_spt: str = SERVERCHAN_SPT or ""
+
+    @classmethod
+    def from_reader_config(cls, config):
+        return cls(
+            pushplus_token=config.pushplus_token,
+            telegram_bot_token=config.telegram_bot_token,
+            telegram_chat_id=config.telegram_chat_id,
+            wxpusher_spt=config.wxpusher_spt,
+            serverchan_spt=config.serverchan_spt,
+        )
 
 
 class PushNotification:
@@ -123,20 +143,21 @@ class PushNotification:
 """外部调用"""
 
 
-def push(content, method):
+def push(content, method, settings=None):
     """统一推送接口，支持 PushPlus、Telegram 和 WxPusher"""
     notifier = PushNotification()
+    settings = settings or PushSettings()
 
     if method == "pushplus":
-        token = PUSHPLUS_TOKEN
+        token = settings.pushplus_token
         return notifier.push_pushplus(content, token)
     elif method == "telegram":
-        bot_token = TELEGRAM_BOT_TOKEN
-        chat_id = TELEGRAM_CHAT_ID
+        bot_token = settings.telegram_bot_token
+        chat_id = settings.telegram_chat_id
         return notifier.push_telegram(content, bot_token, chat_id)
     elif method == "wxpusher":
-        return notifier.push_wxpusher(content, WXPUSHER_SPT)
+        return notifier.push_wxpusher(content, settings.wxpusher_spt)
     elif method == "serverchan":
-        return notifier.push_serverChan(content, SERVERCHAN_SPT)
+        return notifier.push_serverChan(content, settings.serverchan_spt)
     else:
         raise ValueError("❌ 无效的通知渠道，请选择 'pushplus'、'telegram' 或 'wxpusher'")

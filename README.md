@@ -10,6 +10,20 @@
 - **定时运行推送**：可部署在GitHub Action/服务器上，支持每天定时运行并推送结果到微信。
 - **Cookie自动更新**：脚本能自动获取并更新Cookie，一次部署后面无需其它操作。
 - **轻量化设计**：本脚本实现了轻量化的编写，部署服务器/GIthub action后到点运行，无需额外硬件。
+- **服务器控制面板**：支持浏览器配置参数、扫码登录、书城选书、手动/定时运行、停止正在运行的任务和删除历史记录。
+
+***
+## 本 Fork 与上游的主要区别
+
+本仓库基于上游微信读书自动阅读脚本继续扩展，原有 GitHub Actions、Docker 和 `main.py` 运行方式仍然保留。本 fork 主要新增：
+
+- **Web 控制面板**：新增 Flask 控制面板，可在浏览器中配置阅读次数、推送方式、登录方式和定时任务。
+- **uv 环境管理**：新增 `pyproject.toml` 和 `uv.lock`，服务器部署时可以直接使用 `uv sync` 安装依赖。
+- **扫码登录**：新增 Playwright 扫码登录流程，登录成功后自动保存微信读书登录态。
+- **书城选书**：支持从微信读书书城搜索书名或作者，并把选中的书加入刷时长列表。
+- **任务管理**：支持立即运行、每日定时运行、停止正在运行的任务、删除已结束的运行记录。
+- **本地数据存储**：控制面板使用 SQLite 保存配置和运行记录，数据文件默认在 `data/` 目录，不提交到仓库。
+- **测试覆盖**：新增控制面板、扫码登录、书城搜索、任务停止/删除等相关测试。
 
 ***
 ## 操作步骤（v5.0） 🛠️
@@ -62,11 +76,74 @@
 - 在你的服务器上有Python运行环境即可，使用`cron`定义自动运行。
 - 或者通过docker运行，将抓到的bash命令在 [Convert](https://curlconverter.com/python/) 转化为Python字典格式，复制需要的headers与cookies即可（data不需要）。
 
-steps1：克隆这个项目：`git clone https://github.com/findmover/wxread.git`<br>
+steps1：克隆这个项目：`git clone https://github.com/takukaiyo/wxread.git`<br>
 steps2：配置config.py里的headers、cookies、READ_NUM、PUSH_METHOD以及对应推送方式token<br>
 steps3：进入目录使用镜像构建容器：
 `docker rm -f wxread && docker build -t wxread . && docker run -d --name wxread -v $(pwd)/logs:/app/logs --restart always wxread`<br>
 steps4：测试：`docker exec -it wxread python /app/main.py`
+
+### 方法三：服务器控制面板（uv 部署）
+
+控制面板适合在常驻服务器上运行，可以在浏览器里完成常用操作，不需要反复改 `config.py` 或 GitHub Secrets。
+
+面板功能：
+
+- 粘贴 `curl` 登录，或者直接扫码登录微信读书。
+- 搜索微信读书书城，把指定书目加入刷时长列表。
+- 配置 `READ_NUM`，支持快捷选择签到 2 次、10/20/40/60/100 分钟。
+- 配置推送方式和通知 token，不推送时可以留空。
+- 手动立即运行，也可以设置每日定时任务。
+- 运行历史里可以停止正在运行的任务，也可以删除已结束的历史记录。
+
+进入项目目录：
+
+```bash
+git clone https://github.com/takukaiyo/wxread.git
+cd wxread
+```
+
+安装依赖：
+
+```bash
+uv sync
+```
+
+首次使用扫码登录前安装浏览器运行时：
+
+```bash
+uv run playwright install chromium
+```
+
+首次启动前建议设置面板密码：
+
+```bash
+export WXREAD_ADMIN_PASSWORD='替换成你的面板密码'
+```
+
+启动控制面板：
+
+```bash
+uv run python app.py --host 0.0.0.0 --port 8088
+```
+
+然后在同一局域网浏览器打开：
+
+```text
+http://服务器局域网IP:8088
+```
+
+如果没有设置 `WXREAD_ADMIN_PASSWORD`，默认面板密码是 `wxread`，首次登录后请在面板里改掉。
+
+控制面板使用方式：
+
+1. 登录面板。
+2. 在“登录方式”里选择“扫码登录”生成二维码，用微信扫码；也可以打开“粘贴 curl 登录”手动保存抓包内容。
+3. 在“书城选书”里搜索书名或作者，点击“添加”，再保存配置。
+4. 设置 `READ_NUM` 或用快捷按钮选择时长。
+5. 点击“立即运行”，或在“定时任务”里设置每日运行时间。
+6. 如果任务正在运行，运行历史里会显示“停止”；任务结束后可以点击“删除”清理记录。
+
+控制面板运行数据保存在 `data/wxread.sqlite3`，运行日志保存在 `logs/`，这些文件不会提交到 git。
 
 ***
 ## Attention 📢
