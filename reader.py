@@ -36,7 +36,14 @@ READ_URL = "https://weread.qq.com/web/book/read"
 RENEW_URL = "https://weread.qq.com/web/login/renewal"
 FIX_SYNCKEY_URL = "https://weread.qq.com/web/book/chapterInfos"
 SEARCH_URL = "https://weread.qq.com/web/search/global"
+WEREAD_HOME = "https://weread.qq.com/"
 REQUEST_TIMEOUT = 15
+BROWSER_RESPONSE_TIMEOUT_MS = 20_000
+DEFAULT_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 @dataclass
@@ -59,6 +66,7 @@ class ReaderConfig:
     data: dict[str, object] = field(default_factory=lambda: copy.deepcopy(DEFAULT_DATA))
     books: list[str] = field(default_factory=lambda: list(DEFAULT_BOOKS))
     chapters: list[str] = field(default_factory=lambda: list(DEFAULT_CHAPTERS))
+    selected_book_infos: list[BookInfo] = field(default_factory=list)
 
 
 @dataclass
@@ -167,6 +175,12 @@ def build_config_from_settings(settings: dict[str, str]) -> ReaderConfig:
     selected_books = parse_selected_books(settings.get("SELECTED_BOOKS", ""))
     if selected_books:
         config.books = selected_books
+        selected_set = set(selected_books)
+        config.selected_book_infos = [
+            book
+            for book in parse_book_library(settings.get("BOOK_LIBRARY", ""))
+            if book.book_id in selected_set
+        ]
     return config
 
 
@@ -335,6 +349,13 @@ def run_reading(
     progress_callback: ProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
 ) -> ReaderResult:
+    if config.selected_book_infos:
+        return run_browser_reading(
+            config,
+            sleep_seconds,
+            progress_callback,
+            should_cancel,
+        )
     success_count = 0
     try:
         refresh_cookie(config, progress_callback)
@@ -396,6 +417,145 @@ def run_reading(
         emit(progress_callback, "ERROR", message)
         maybe_push_error(config, message)
         return ReaderResult(status="failed", success_count=success_count, error=message)
+
+
+def run_browser_reading(
+    config: ReaderConfig,
+    sleep_seconds: int,
+    progress_callback: ProgressCallback | None,
+    should_cancel: CancelCheck | None,
+    playwright_factory: Callable[[], object] | None = None,
+) -> ReaderResult:
+    success_count = 0
+    browser = None
+    try:
+        if playwright_factory is None:
+            from playwright.sync_api import sync_playwright
+
+            playwright_factory = sync_playwright
+
+        refresh_cookie(config, progress_callback)
+        if is_cancelled(should_cancel):
+            return ReaderResult(status="cancelled", success_count=0)
+
+        user_agent = next(
+            (
+                value
+                for key, value in config.headers.items()
+                if key.lower() == "user-agent"
+            ),
+            DEFAULT_BROWSER_USER_AGENT,
+        )
+        with playwright_factory() as playwright:
+            browser = playwright.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent=user_agent,
+            )
+            context.add_cookies(
+                [
+                    {
+                        "name": name,
+                        "value": value,
+                        "domain": ".weread.qq.com",
+                        "path": "/",
+                    }
+                    for name, value in config.cookies.items()
+                ]
+            )
+            page = context.new_page()
+            current_book_id = ""
+
+            while success_count < config.read_num:
+                if is_cancelled(should_cancel):
+                    emit(progress_callback, "INFO", "任务已停止")
+                    return ReaderResult(
+                        status="cancelled",
+                        success_count=success_count,
+                    )
+
+                book = random.choice(config.selected_book_infos)
+                if book.book_id != current_book_id:
+                    reader_url = resolve_reader_url(page, book)
+                    page.goto(
+                        reader_url,
+                        wait_until="domcontentloaded",
+                        timeout=45_000,
+                    )
+                    page.wait_for_timeout(5_000)
+                    current_book_id = book.book_id
+                    emit(progress_callback, "INFO", f"开始阅读：{book.title}")
+
+                if sleep_with_cancel(sleep_seconds, should_cancel):
+                    emit(progress_callback, "INFO", "任务已停止")
+                    return ReaderResult(
+                        status="cancelled",
+                        success_count=success_count,
+                    )
+
+                with page.expect_response(
+                    lambda response: response.url == READ_URL,
+                    timeout=BROWSER_RESPONSE_TIMEOUT_MS,
+                ) as response_info:
+                    page.keyboard.press("ArrowRight")
+                response_data = response_info.value.json()
+                if not (
+                    response_data.get("succ")
+                    and response_data.get("synckey") is not None
+                ):
+                    raise RuntimeError(
+                        f"微信读书未确认阅读成功：{response_data!r}"
+                    )
+
+                success_count += 1
+                emit(
+                    progress_callback,
+                    "INFO",
+                    f"阅读成功：{success_count}/{config.read_num}",
+                )
+
+            browser.close()
+            browser = None
+
+        maybe_push_completion(config, success_count)
+        return ReaderResult(status="success", success_count=success_count)
+    except Exception as exc:
+        message = str(exc)
+        emit(progress_callback, "ERROR", message)
+        maybe_push_error(config, message)
+        return ReaderResult(
+            status="failed",
+            success_count=success_count,
+            error=message,
+        )
+
+
+def resolve_reader_url(page: object, book: BookInfo) -> str:
+    page.goto(
+        WEREAD_HOME,
+        wait_until="domcontentloaded",
+        timeout=45_000,
+    )
+    page.wait_for_timeout(4_000)
+    search = page.locator("input[type=search]").first
+    search.fill(book.title)
+    search.press("Enter")
+    page.wait_for_timeout(4_000)
+
+    title_nodes = page.get_by_text(book.title, exact=True)
+    for index in range(title_nodes.count()):
+        href = title_nodes.nth(index).evaluate(
+            "element => {"
+            " const link = element.closest('a');"
+            " return link ? link.href : null;"
+            "}"
+        )
+        if href and href.startswith(f"{WEREAD_HOME}web/reader/"):
+            return href
+    raise RuntimeError(f"无法打开所选书目：{book.title}")
 
 
 def is_cancelled(should_cancel: CancelCheck | None) -> bool:

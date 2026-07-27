@@ -46,7 +46,14 @@ def test_build_config_from_settings_uses_curl_values():
             "-H 'accept: application/json' "
             "-b 'wr_skey=oldkey; pac_uid=abc'"
         ),
-        "SELECTED_BOOKS": "book-1,book-2 book-1",
+        "SELECTED_BOOKS": "book1,book2 book1",
+        "BOOK_LIBRARY": json.dumps(
+            [
+                {"bookId": "book1", "title": "Book One"},
+                {"bookId": "book2", "title": "Book Two"},
+                {"bookId": "book3", "title": "Book Three"},
+            ]
+        ),
     }
 
     config = reader.build_config_from_settings(settings)
@@ -56,7 +63,11 @@ def test_build_config_from_settings_uses_curl_values():
     assert config.serverchan_spt == "token"
     assert config.headers["accept"] == "application/json"
     assert config.cookies["wr_skey"] == "oldkey"
-    assert config.books == ["book-1", "book-2"]
+    assert config.books == ["book1", "book2"]
+    assert config.selected_book_infos == [
+        reader.BookInfo("book1", "Book One"),
+        reader.BookInfo("book2", "Book Two"),
+    ]
 
 
 def test_book_library_roundtrip():
@@ -210,3 +221,166 @@ def test_run_reading_can_be_cancelled_before_next_read(monkeypatch):
     assert result.success_count == 0
     assert posts == [reader.RENEW_URL]
     assert any(event.message == "任务已停止" for event in events)
+
+
+def test_run_reading_uses_browser_for_bookstore_selection(monkeypatch):
+    expected = reader.ReaderResult(status="success", success_count=1)
+    calls = []
+
+    def fake_browser_run(config, sleep_seconds, progress_callback, should_cancel):
+        calls.append((config, sleep_seconds, progress_callback, should_cancel))
+        return expected
+
+    monkeypatch.setattr(reader, "run_browser_reading", fake_browser_run)
+    callback = lambda event: None
+    cancel = lambda: False
+    config = reader.ReaderConfig(
+        read_num=1,
+        selected_book_infos=[reader.BookInfo("3300108590", "Book One")],
+    )
+
+    result = reader.run_reading(
+        config,
+        sleep_seconds=30,
+        progress_callback=callback,
+        should_cancel=cancel,
+    )
+
+    assert result is expected
+    assert calls == [(config, 30, callback, cancel)]
+
+
+def test_run_browser_reading_counts_official_success(monkeypatch):
+    events = []
+
+    class FakeApiResponse:
+        url = reader.READ_URL
+
+        def json(self):
+            return {"succ": 1, "synckey": 123}
+
+    class FakeResponseInfo:
+        value = FakeApiResponse()
+
+    class FakeExpectedResponse:
+        def __enter__(self):
+            return FakeResponseInfo()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeKeyboard:
+        def __init__(self):
+            self.keys = []
+
+        def press(self, key):
+            self.keys.append(key)
+
+    class FakePage:
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.urls = []
+
+        def goto(self, url, **kwargs):
+            self.urls.append(url)
+
+        def wait_for_timeout(self, milliseconds):
+            return None
+
+        def expect_response(self, predicate, timeout):
+            assert timeout == 20_000
+            assert predicate(FakeApiResponse())
+            return FakeExpectedResponse()
+
+    class FakeContext:
+        def __init__(self):
+            self.page = FakePage()
+            self.cookies = []
+
+        def add_cookies(self, cookies):
+            self.cookies = cookies
+
+        def new_page(self):
+            return self.page
+
+    class FakeBrowser:
+        def __init__(self):
+            self.context = FakeContext()
+            self.closed = False
+            self.manager = None
+
+        def new_context(self, **kwargs):
+            return self.context
+
+        def close(self):
+            assert self.manager is not None
+            assert self.manager.exited is False
+            self.closed = True
+
+    class FakeChromium:
+        def __init__(self):
+            self.browser = FakeBrowser()
+
+        def launch(self, **kwargs):
+            return self.browser
+
+    class FakePlaywright:
+        def __init__(self):
+            self.chromium = FakeChromium()
+
+    class FakePlaywrightManager:
+        def __init__(self):
+            self.playwright = FakePlaywright()
+            self.exited = False
+            self.playwright.chromium.browser.manager = self
+
+        def __enter__(self):
+            return self.playwright
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.exited = True
+            return False
+
+    manager = FakePlaywrightManager()
+    monkeypatch.setattr(reader, "refresh_cookie", lambda config, callback=None: None)
+    monkeypatch.setattr(
+        reader,
+        "resolve_reader_url",
+        lambda page, book: f"https://weread.qq.com/web/reader/{book.book_id}",
+    )
+    config = reader.ReaderConfig(
+        read_num=1,
+        cookies={"wr_skey": "key", "wr_vid": "123"},
+        selected_book_infos=[reader.BookInfo("3300108590", "Book One")],
+    )
+
+    result = reader.run_browser_reading(
+        config,
+        sleep_seconds=0,
+        progress_callback=events.append,
+        should_cancel=None,
+        playwright_factory=lambda: manager,
+    )
+
+    browser = manager.playwright.chromium.browser
+    assert result == reader.ReaderResult(status="success", success_count=1)
+    assert browser.context.cookies == [
+        {
+            "name": "wr_skey",
+            "value": "key",
+            "domain": ".weread.qq.com",
+            "path": "/",
+        },
+        {
+            "name": "wr_vid",
+            "value": "123",
+            "domain": ".weread.qq.com",
+            "path": "/",
+        },
+    ]
+    assert browser.context.page.urls == [
+        "https://weread.qq.com/web/reader/3300108590"
+    ]
+    assert browser.context.page.keyboard.keys == ["ArrowRight"]
+    assert browser.closed is True
+    assert any("1/1" in event.message for event in events)
