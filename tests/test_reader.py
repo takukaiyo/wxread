@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 import reader
 
@@ -384,3 +385,88 @@ def test_run_browser_reading_counts_official_success(monkeypatch):
     assert browser.context.page.keyboard.keys == ["ArrowRight"]
     assert browser.closed is True
     assert any("1/1" in event.message for event in events)
+
+
+def test_turn_page_restarts_from_first_chapter_at_book_end():
+    class FakeApiResponse:
+        def json(self):
+            return {"succ": 1, "synckey": 123}
+
+    class FakeResponseInfo:
+        value = FakeApiResponse()
+
+    class FakeExpectedResponse:
+        def __init__(self, should_timeout):
+            self.should_timeout = should_timeout
+
+        def __enter__(self):
+            return FakeResponseInfo()
+
+        def __exit__(self, exc_type, exc, traceback):
+            if self.should_timeout:
+                raise PlaywrightTimeoutError("book boundary")
+            return False
+
+    class FakeKeyboard:
+        def __init__(self):
+            self.keys = []
+
+        def press(self, key):
+            self.keys.append(key)
+
+    class FakePage:
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.attempts = 0
+            self.clicks = []
+            self.urls = []
+            self.waits = []
+
+        def expect_response(self, predicate, timeout):
+            self.attempts += 1
+            return FakeExpectedResponse(should_timeout=self.attempts == 1)
+
+        def goto(self, url, **kwargs):
+            self.urls.append((url, kwargs))
+
+        def locator(self, selector):
+            page = self
+
+            class FakeLocator:
+                @property
+                def first(self):
+                    return self
+
+                def click(self):
+                    page.clicks.append(selector)
+
+            return FakeLocator()
+
+        def wait_for_timeout(self, milliseconds):
+            self.waits.append(milliseconds)
+
+    page = FakePage()
+    events = []
+
+    response_data, direction = reader.turn_page_with_boundary_recovery(
+        page,
+        "ArrowRight",
+        "https://weread.qq.com/web/reader/book-id",
+        events.append,
+    )
+
+    assert response_data == {"succ": 1, "synckey": 123}
+    assert direction == "ArrowRight"
+    assert page.keyboard.keys == ["ArrowRight"]
+    assert page.urls == [
+        (
+            "https://weread.qq.com/web/reader/book-id",
+            {"wait_until": "domcontentloaded", "timeout": 45_000},
+        )
+    ]
+    assert page.waits == [5_000, 500]
+    assert page.clicks == [
+        "button.readerControls_item.catalog, button.rbb_item.catalog",
+        "li.readerCatalog_list_item:not(.readerCatalog_list_item_disabled)",
+    ]
+    assert any(event.level == "WARNING" for event in events)

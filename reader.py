@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import requests
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from config import book as DEFAULT_BOOKS
 from config import chapter as DEFAULT_CHAPTERS
@@ -468,6 +469,8 @@ def run_browser_reading(
             )
             page = context.new_page()
             current_book_id = ""
+            current_reader_url = ""
+            page_turn_key = "ArrowRight"
 
             while success_count < config.read_num:
                 if is_cancelled(should_cancel):
@@ -479,9 +482,9 @@ def run_browser_reading(
 
                 book = random.choice(config.selected_book_infos)
                 if book.book_id != current_book_id:
-                    reader_url = resolve_reader_url(page, book)
+                    current_reader_url = resolve_reader_url(page, book)
                     page.goto(
-                        reader_url,
+                        current_reader_url,
                         wait_until="domcontentloaded",
                         timeout=45_000,
                     )
@@ -496,12 +499,14 @@ def run_browser_reading(
                         success_count=success_count,
                     )
 
-                with page.expect_response(
-                    lambda response: response.url == READ_URL,
-                    timeout=BROWSER_RESPONSE_TIMEOUT_MS,
-                ) as response_info:
-                    page.keyboard.press("ArrowRight")
-                response_data = response_info.value.json()
+                response_data, page_turn_key = (
+                    turn_page_with_boundary_recovery(
+                        page,
+                        page_turn_key,
+                        current_reader_url,
+                        progress_callback,
+                    )
+                )
                 if not (
                     response_data.get("succ")
                     and response_data.get("synckey") is not None
@@ -556,6 +561,57 @@ def resolve_reader_url(page: object, book: BookInfo) -> str:
         if href and href.startswith(f"{WEREAD_HOME}web/reader/"):
             return href
     raise RuntimeError(f"无法打开所选书目：{book.title}")
+
+
+def turn_page_with_boundary_recovery(
+    page: object,
+    direction: str,
+    reader_url: str,
+    progress_callback: ProgressCallback | None = None,
+) -> tuple[dict[str, object], str]:
+    try:
+        return wait_for_page_turn(page, direction), direction
+    except PlaywrightTimeoutError:
+        emit(
+            progress_callback,
+            "WARNING",
+            "已读到书末，自动从头开始",
+        )
+        return restart_from_first_chapter(page, reader_url), "ArrowRight"
+
+
+def wait_for_page_turn(page: object, direction: str) -> dict[str, object]:
+    with page.expect_response(
+        lambda response: response.url == READ_URL,
+        timeout=BROWSER_RESPONSE_TIMEOUT_MS,
+    ) as response_info:
+        page.keyboard.press(direction)
+    return response_info.value.json()
+
+
+def restart_from_first_chapter(
+    page: object,
+    reader_url: str,
+) -> dict[str, object]:
+    page.goto(
+        reader_url,
+        wait_until="domcontentloaded",
+        timeout=45_000,
+    )
+    page.wait_for_timeout(5_000)
+    page.locator(
+        "button.readerControls_item.catalog, button.rbb_item.catalog"
+    ).first.click()
+    page.wait_for_timeout(500)
+    first_chapter = page.locator(
+        "li.readerCatalog_list_item:not(.readerCatalog_list_item_disabled)"
+    ).first
+    with page.expect_response(
+        lambda response: response.url == READ_URL,
+        timeout=BROWSER_RESPONSE_TIMEOUT_MS,
+    ) as response_info:
+        first_chapter.click()
+    return response_info.value.json()
 
 
 def is_cancelled(should_cancel: CancelCheck | None) -> bool:
